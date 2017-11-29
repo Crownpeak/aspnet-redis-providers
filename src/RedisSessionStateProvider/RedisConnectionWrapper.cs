@@ -146,21 +146,10 @@ namespace Microsoft.Web.Redis
         //             2) If another write lock exists than its lock value from cache
         // retArray = {lockValue , session data if lock was taken successfully, session timeout value if exists, wheather lock was taken or not}
         static readonly string writeLockAndGetDataScript = (@" 
-                local retArray = {} 
-                local lockValue = ARGV[1] 
-                KEYS[1] = KEYS[1] .. ARGV[1]
-                local locked = redis.call('SETNX',KEYS[1],ARGV[1])        
-                local IsLocked = true
+                local retArray = {}
                 
-                if locked == 0 then
-                    lockValue = redis.call('GET',KEYS[1])
-                else
-                    redis.call('EXPIRE',KEYS[1],ARGV[2])
-                    IsLocked = false
-                end
-                
-                retArray[1] = lockValue
-                if lockValue == ARGV[1] then retArray[2] = redis.call('HGETALL',KEYS[2]) else retArray[2] = '' end
+                retArray[1] = ARGV[1] 
+                retArray[2] = redis.call('HGETALL',KEYS[2])
                 
                 local SessionTimeout = redis.call('HGET', KEYS[3], 'SessionTimeout')
                 if SessionTimeout ~= false then 
@@ -171,7 +160,6 @@ namespace Microsoft.Web.Redis
                     retArray[3] = '-1' 
                 end
 
-                retArray[4] = IsLocked
                 return retArray
                 ");
 
@@ -184,18 +172,13 @@ namespace Microsoft.Web.Redis
 
             rowDataFromRedis = redisConnection.Eval(writeLockAndGetDataScript, keyArgs, valueArgs);
 
-            bool ret = false;
             data = null;
 
             lockId = redisConnection.GetLockId(rowDataFromRedis);
             sessionTimeout = redisConnection.GetSessionTimeout(rowDataFromRedis);
-            bool isLocked = redisConnection.IsLocked(rowDataFromRedis);
-            if (!isLocked && lockId.ToString().Equals(expectedLockId))
-            {
-                ret = true;
-                data = redisConnection.GetSessionData(rowDataFromRedis);
-            }
-            return ret;
+            data = redisConnection.GetSessionData(rowDataFromRedis);
+            
+            return true;
         }
 
         // KEYS = { write-lock-id, data-id, internal-id }
@@ -205,14 +188,9 @@ namespace Microsoft.Web.Redis
         // retArray = {lockValue , session data if lock does not exist}
         static readonly string readLockAndGetDataScript = (@"
                     local retArray = {} 
-                    local lockValue = ''
---[[                    local writeLockValue = redis.call('GET',KEYS[1])
-                    if writeLockValue ~= false then
-                       lockValue = writeLockValue
-                    end
---]]
-                    retArray[1] = lockValue
-                    if lockValue == '' then retArray[2] = redis.call('HGETALL',KEYS[2]) else retArray[2] = '' end
+                    
+                    retArray[1] = ''
+                    retArray[2] = redis.call('HGETALL',KEYS[2]) 
                     
                     local SessionTimeout = redis.call('HGET', KEYS[3], 'SessionTimeout')
                     if SessionTimeout ~= false then 
@@ -232,20 +210,11 @@ namespace Microsoft.Web.Redis
             object[] valueArgs = new object[] { };
 
             rowDataFromRedis = redisConnection.Eval(readLockAndGetDataScript, keyArgs, valueArgs);
-
-            bool ret = false;
-            data = null;
-
-            lockId = redisConnection.GetLockId(rowDataFromRedis);
             sessionTimeout = redisConnection.GetSessionTimeout(rowDataFromRedis);
-            if (lockId.ToString().Equals(""))
-            {
-                // If lockId = "" means no lock exists and we got data from store.
-                lockId = null;
-                ret = true;
-                data = redisConnection.GetSessionData(rowDataFromRedis);
-            }
-            return ret;
+            lockId = null;
+            data = redisConnection.GetSessionData(rowDataFromRedis);
+            
+            return true;
         }
 
 /*-------End of Lock set operation-----------------------------------------------------------------------------------------------------------------------------------------------*/
@@ -262,11 +231,6 @@ namespace Microsoft.Web.Redis
         // KEYS[1] = write-lock-id, KEYS[2] = data-id, KEYS[3] = internal-id
         // ARGV = { write-lock-value }, ARGV[2] = session time out
         static readonly string releaseWriteLockIfLockMatchScript = (@"
-                KEYS[1] = KEYS[1] .. ARGV[1]
-                local writeLockValueFromCache = redis.call('GET',KEYS[1])
-                if writeLockValueFromCache == ARGV[1] then
-                    redis.call('DEL',KEYS[1])
-                end 
                 local SessionTimeout = redis.call('HGET', KEYS[3], 'SessionTimeout')
                 if SessionTimeout ~= false then 
                     redis.call('EXPIRE',KEYS[2], SessionTimeout) 
@@ -279,23 +243,9 @@ namespace Microsoft.Web.Redis
 
 /*-------End of Lock release operation-----------------------------------------------------------------------------------------------------------------------------------------------*/
 
-        // KEYS = { write-lock-id, data-id, internal-id}
-        // ARGV = { write-lock-value }
-        static readonly string removeIfLockMatchScript = (@" 
-                KEYS[1] = KEYS[1] .. ARGV[1]
-                local lockValue = redis.call('GET',KEYS[1])
-                if lockValue ==  ARGV[1] then
-                    redis.call('DEL',KEYS[2])
-                    redis.call('DEL',KEYS[3])
-                    redis.call('DEL',KEYS[1])
-                end return 1
-                ");
-        
         public void TryRemoveAndReleaseLockIfLockIdMatch(object lockId)
         {
-            string[] keyArgs = { Keys.LockKey, Keys.DataKey, Keys.InternalKey };
-            object[] valueArgs = { lockId.ToString() };
-            redisConnection.Eval(removeIfLockMatchScript, keyArgs, valueArgs);
+            
         }
 
 /*-------Start of TryUpdateIfLockIdMatch operation-----------------------------------------------------------------------------------------------------------------------------------------------*/
@@ -307,16 +257,13 @@ namespace Microsoft.Web.Redis
         // ARGV[9...] = actual data
         // this order should not change LUA script depends on it
         static readonly string removeAndUpdateIfLockMatchScript = (@"
-                KEYS[1] = KEYS[1] .. ARGV[1]
-                local writeLockValueFromCache = redis.call('GET',KEYS[1])
-                if writeLockValueFromCache == ARGV[1] then
                     if tonumber(ARGV[3]) ~= 0 then redis.call('HDEL', KEYS[2], unpack(ARGV, ARGV[4], ARGV[5])) end
                     if tonumber(ARGV[6]) ~= 0 then redis.call('HMSET', KEYS[2], unpack(ARGV, ARGV[7], ARGV[8])) end
                     redis.call('EXPIRE',KEYS[2],ARGV[2])
                     redis.call('HMSET', KEYS[3], 'SessionTimeout', ARGV[2])
                     redis.call('EXPIRE',KEYS[3],ARGV[2]) 
                     redis.call('DEL',KEYS[1])
-                end return 1");
+                    return 1");
 
         private bool TryUpdateIfLockIdMatchPrepare(object lockId, ISessionStateItemCollection data, int sessionTimeout, out string[] keyArgs, out object[] valueArgs)
         {

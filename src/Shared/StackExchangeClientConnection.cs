@@ -151,11 +151,7 @@ namespace Microsoft.Web.Redis
 
         public bool IsLocked(object rowDataFromRedis)
         {
-            RedisResult rowDataAsRedisResult = (RedisResult)rowDataFromRedis;
-            RedisResult[] lockScriptReturnValueArray = (RedisResult[])rowDataAsRedisResult;
-            Debug.Assert(lockScriptReturnValueArray != null);
-            Debug.Assert(lockScriptReturnValueArray[3] != null);
-            return (bool)lockScriptReturnValueArray[3];
+          return false;
         }
 
         public string GetLockId(object rowDataFromRedis)
