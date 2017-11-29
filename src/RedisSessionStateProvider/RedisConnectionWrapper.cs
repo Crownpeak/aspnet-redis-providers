@@ -148,6 +148,7 @@ namespace Microsoft.Web.Redis
         static readonly string writeLockAndGetDataScript = (@" 
                 local retArray = {} 
                 local lockValue = ARGV[1] 
+                KEYS[1] = KEYS[1] .. ARGV[1]
                 local locked = redis.call('SETNX',KEYS[1],ARGV[1])        
                 local IsLocked = true
                 
@@ -205,10 +206,11 @@ namespace Microsoft.Web.Redis
         static readonly string readLockAndGetDataScript = (@"
                     local retArray = {} 
                     local lockValue = ''
-                    local writeLockValue = redis.call('GET',KEYS[1])
+--[[                    local writeLockValue = redis.call('GET',KEYS[1])
                     if writeLockValue ~= false then
                        lockValue = writeLockValue
                     end
+--]]
                     retArray[1] = lockValue
                     if lockValue == '' then retArray[2] = redis.call('HGETALL',KEYS[2]) else retArray[2] = '' end
                     
@@ -259,7 +261,8 @@ namespace Microsoft.Web.Redis
 
         // KEYS[1] = write-lock-id, KEYS[2] = data-id, KEYS[3] = internal-id
         // ARGV = { write-lock-value }, ARGV[2] = session time out
-        static readonly string releaseWriteLockIfLockMatchScript = (@" 
+        static readonly string releaseWriteLockIfLockMatchScript = (@"
+                KEYS[1] = KEYS[1] .. ARGV[1]
                 local writeLockValueFromCache = redis.call('GET',KEYS[1])
                 if writeLockValueFromCache == ARGV[1] then
                     redis.call('DEL',KEYS[1])
@@ -279,6 +282,7 @@ namespace Microsoft.Web.Redis
         // KEYS = { write-lock-id, data-id, internal-id}
         // ARGV = { write-lock-value }
         static readonly string removeIfLockMatchScript = (@" 
+                KEYS[1] = KEYS[1] .. ARGV[1]
                 local lockValue = redis.call('GET',KEYS[1])
                 if lockValue ==  ARGV[1] then
                     redis.call('DEL',KEYS[2])
@@ -303,6 +307,7 @@ namespace Microsoft.Web.Redis
         // ARGV[9...] = actual data
         // this order should not change LUA script depends on it
         static readonly string removeAndUpdateIfLockMatchScript = (@"
+                KEYS[1] = KEYS[1] .. ARGV[1]
                 local writeLockValueFromCache = redis.call('GET',KEYS[1])
                 if writeLockValueFromCache == ARGV[1] then
                     if tonumber(ARGV[3]) ~= 0 then redis.call('HDEL', KEYS[2], unpack(ARGV, ARGV[4], ARGV[5])) end
